@@ -1,0 +1,29 @@
+@article{IlicicT2016,
+  author =        {Ilicic T, Kim JK, Kolodziejczyk AA, Bagger FO, McCarthy DJ, Marioni JC, Teichmann SA},
+  journal =       {Genome Biol},
+  title =         {{Classification of low quality cells from single-cell RNA-seq data.}},
+  year =          {2016},
+  doi =           {10.1186/s13059-016-0888-1},
+}
+
+@article{Brennecke2013,
+  author =        {Brennecke, P., Anders, S., Kim, J. et al.},
+  journal =       {Nat Methods},
+  pages =         {1093–-1095},
+  title =         {{Accounting for technical noise in single-cell RNA-seq experiments.}},
+  volume =        {10},
+  year =          {2013},
+  doi =           {10.1038/nmeth.2645},
+  url = 	  {https://doi.org/10.1038/nmeth.2645}
+}
+
+@article{Tim2019,
+  author =        {Tim Stuart, Andrew Butler, Paul Hoffman, Christoph Hafemeister, Efthymia Papalexi, William M. Mauck III, Yuhan Hao, Marlon Stoeckius, Peter Smibert, Rahul Satija},
+  journal =       {Cell Press},
+  page = 	  {1888-1902.E21},
+  title =         {{Comprehensive Integration of Single-Cell Data}},
+  volume =        {177},
+  year =          {2019},
+  doi =           {10.1016/j.cell.2019.05.031},
+  url = 	  {https://doi.org/10.1016/j.cell.2019.05.031}
+}

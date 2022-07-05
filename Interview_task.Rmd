@@ -1,0 +1,269 @@
+---
+title: "Cluster level Statistics for single cell expression data"
+author: "Vishwa Talati"
+date: '2022-06-29'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Interview Task Instructions
+
+To calculate cluster level statistics including average expression level and percent cell expressing for each gene (gene is expressing if the value in the matrix. Then use dot plot to show the cluster level statistics for the first 20 genes. Dot size reflects percent expressing while color of dot reflects the level of average expression.
+
+Bonus Task:
+
+-   Load the data in Seurat
+-   Use `addModuleScore` function to calculate the scores of each gene module in each cell.
+-   Illustrate gene module score on a graph using UMAP coordinates for each gene module and save results as files.
+
+Input files:
+
+-   Expression Data
+-   Metadata
+-   Gene Module annotation
+
+# Overview
+
+This Rmd is meant to demonstrate the steps involved in the processing of given gene2cell expression data as input file all the way to performing downstream analysis where it calculates the cluster level statistics.
+
+# Dependencies
+
+```{r packages, warning=FALSE, error=FALSE, echo=FALSE}
+
+library(Seurat)
+library(stringr)
+library(dplyr)
+library(patchwork)
+library(ggplot2)
+library(DT)
+library(formattable)
+```
+
+# Loading the data and looking into input files
+
+To load the input files in csv format, `read.table` function is used. Following is the description for each of the input files:
+
+-   Expression Data: Represents expression levels of gene per cell combination
+-   Metadata: Represents cell to cluster mapping in order to group cells into clusters
+-   Gene annotation: Represents module number for each gene (M1,M2,M3)
+
+The following code chunk also prepares the data for further processing.
+
+```{r load_data}
+
+expression_data <- read.table("AG_matrix.csv", sep = ",", header = T)
+metadata <- read.table("AG_metadata.csv", sep = ",", header = T)
+genemodule <- read.table("GeneModule.csv", sep = ",", header = T)
+
+##checking the dimension of expression data
+dim(expression_data)
+##preparing the data to read as Seurat object
+#setting the rownames as Gene
+rownames(expression_data) <- expression_data$Gene
+
+#dropping the extra column with Gene names
+expression_data <- subset(expression_data, select = -Gene)
+
+```
+
+# Seurat object generation and understanding various slots of it
+
+In order to work with the expression data and perform cluster level statistics, I will use [Seurat](https://www.rdocumentation.org/packages/Seurat/versions/4.1.1) package. It is a package that has the required toolkit to perform Quality control, analysis and exploration of single cell data.
+
+The very first step is to load the expression data as Seurat object which is an R class object for single cell data using `CreateSeuratObject` function. I will explore this Seurat object in order to see how the information is stored.
+
+The expression counts are stored within the assay named "RNA".
+
+The meta.data slot is where you can add the sample level metadata information about the seurat object.Since there is no sample level metadata information, this slot just calculates a couple of QC summary statistics like nCount_RNA and nFeature_RNA by default.
+
+Another important parameter to be considered is percent.mt. Following is the explanation to each of these terms:
+
+-   nCount_RNA: Total number of molecules detected within a cell.
+-   n_Feature_RNA: Number of genes detected in each cell.
+-   percent.mt: High mitochondrial gene content often represents low quality of cells which is why it is important to calculate this and filter mitochondrial genes based on percent.mt.
+
+```{r seurat_gen}
+## we remove the genes with less than 3 cells and cells with less than 200 genes since they don't add meaning to the downstream analysis
+ag_seurat <- CreateSeuratObject(counts = expression_data, min.cells = 3, min.features = 200, project = "Interview Task to calculate cluster level statistics")
+
+##this seurat object has one assay called RNA where counts are stored
+ag_seurat
+##check the assays within the seurat object (currently just 1: RNA)
+Assays(ag_seurat)
+##prints dimensions of count data which has reduced compared to the input expression matrix due to our specifications used while generating the seurat object
+dim(ag_seurat[["RNA"]])
+
+## this is the slot which stores the metadata
+head(ag_seurat@meta.data, 5)
+
+##the above mentioned are some of the slots that are already populated. Other slots can be populated as you move forward in the analysis. 
+
+```
+
+# Checking the quality of the data and visualization
+
+Before visualizing the important QC features listed above, I will first calculate the percent.mt explained above using `PercentateFeatureSet` function.
+
+The next step is to visualize these QC features using `FeatureScatter` plot and `VlnPlot` function from Seurat package.
+
+From the `meta.data` slot, it can be seen that percent.mt values are all zeroes. One of the possible reasons could be due to use of different species like Drosophila meaning the data does not belong to human or mouse genome. The way mitochondrial genes are named in human or mouse reference is different than that in Drosophila and this might be a reason why the code pattern is not able to grab the MT genes from the data.
+
+Also looking at the `orig.ident` column of the meta.data slot and `Vlnplot`, it is safe to assume that the expression data has counts for two samples namely G0 and G1.
+
+```{r qc}
+##percent.mt has zero values.
+ag_seurat[["percent.mt"]] <- PercentageFeatureSet(ag_seurat, pattern = "^MT-")
+
+VlnPlot(ag_seurat, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2 )
+
+
+#this plot shows feature:feature relationship 
+FeatureScatter(ag_seurat, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+
+#filtering the low quality cells
+# filtered_seurat <- subset(x = ag_seurat, 
+#                          subset= (nCount_RNA >= 450) & 
+#                            (nFeature_RNA > 250))
+# b <- VlnPlot(filtered_seurat, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2, )
+# a + labs(title = "After filtering")
+# 
+# a / b
+```
+
+# Normalization and Pre-processing
+
+After looking at the quality of the data and filtering it, the next step is to normalize it. By default, "logNomralize" is used to perform normalization. This is done to make the samples comparable on same scale. The primary goal of normalization using this method is to remove the influence of technical effects in the underlying molecular counts, while preserving true biological variation. It enables sharper biological distinction compared to log-normalization.
+
+However, since the data seems to have two samples (G0, G1), I first split the seurat object as a list of 2 seurat objects using `SplitObject` function.
+
+Following to normalization, the next step is to find subset of features which exhibit high cell to cell variation. This is done using `FindVariableFeatures` function. These genes in turn help to find biological signals during downstream analysis.
+
+```{r preprocess}
+
+ag_seuratlist <-  SplitObject(ag_seurat, split.by = "orig.ident")
+
+ag_seuratlist <- lapply(X = ag_seuratlist, FUN = function(x) {
+  x <- NormalizeData(x)
+  x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+  
+})
+
+# this helps to get the repeatedly variable features across both objects in the list 
+ag_features <- SelectIntegrationFeatures(object.list = ag_seuratlist)
+
+```
+
+# Data Integeration and integerated analysis
+
+The next step is to perform data integration using shared highly variable genes. However, before that we normalize the data for each individual seurat object per sample and identify highly variable genes. After, the integrated data is stored as a separate data assay.
+
+The next step is to scale the integrated data and perform dimensionality reduction steps using PCA and UMAP.
+
+Scaling (linear transformation) is done prior to dimensionality reduction using `ScaleData` function. The rational behind this is to give equal weight in downstream analysis, so that highly-expressed genes do not dominate.
+
+We then perform two types of dimensionality reduction techniques namely linear (PCA) and non linear (UMAP).
+
+-   Linear Dimension Reduction essentially using Principal Component Analysis (PCA) makes the data compact and thus computation faster. The number of PCs corresponds to number of variable genes or the number of cells based on which is smaller. However, most of the PCs represent noise and only top \~50 are selected since they are informative. Elbowplot can be used to determine the dimensionality of the data.
+
+-   Often data in high dimensions can be difficult to interpret which is why for simplification we assume that the data is in low enough dimension that it can be easily visualized. Thus, here we perform Uniform Manifold Approximation and Projection umap which allows low dimensional embeddings for visualization meaning that the relationships between the cells can be retained in low dimensional space. Top PCs can be used as input for this.
+
+The elbow plot ranks the top Pcs based on their percentage variance. Looking at the "elbow" point in the plot, which is around PC-15 which suggests that the true signal is captured in the top 15 PCs meaning they are meaningful clusters.
+
+Using the determined dimensionality, next step is to find K-nearest neighbors using `Findneighbor` function and clusters using `FindClusters` function.
+
+Looking at the UMAP, 15 clusters can be distinguished for each sample. 
+
+```{r integration}
+#uses anchors to integrate two datasets
+ag_anchors <- FindIntegrationAnchors(object.list = ag_seuratlist, anchor.features = ag_features)
+
+# this command creates an 'integrated' data assay
+ag_combined <- IntegrateData(anchorset = ag_anchors)
+
+#downstream analysis will be performed on the corrected data 
+# original unmodified data still resides in the 'RNA' assay
+DefaultAssay(ag_combined) <- "integrated"
+
+# Run the standard workflow for visualization and clustering
+ag_combined <- ScaleData(ag_combined, verbose = FALSE)
+ag_combined <- RunPCA(ag_combined, npcs = 30, verbose = FALSE)
+#plotting the PCs on elbowplot to get an idea about top PCs
+ElbowPlot(ag_combined)
+
+ag_combined <- RunUMAP(ag_combined, reduction = "pca", dims = 1:30)
+ag_combined <- FindNeighbors(ag_combined, reduction = "pca", dims = 1:30)
+ag_combined <- FindClusters(ag_combined, resolution = 0.5)
+
+# Visualization of the umap reduction
+p1 <- DimPlot(ag_combined, reduction = "umap", group.by = "orig.ident") +labs(title = "Plot showing distribution across each sample")
+p2 <- DimPlot(ag_combined, reduction = "umap", label = TRUE, repel = TRUE)+labs(title = "Plot showing distribution across 15 clusters")
+
+p3 <- DimPlot(ag_combined, reduction = "umap", split.by = "orig.ident")+labs(title = "Plot showing distribution across 15 clusters for each sample")
+
+p1 + p2
+
+p3
+```
+
+# Downstream Analysis: Clustering and cluster level statistics
+
+Once the clusters are defined, markers can be found using Differential expression. Here I use `FindAllMarkers` function in order to do that which identifies markers for each process by comparing it to other clusters/groups of cells. It outputs all the cluster level statistics which includes pvalues, adjusted pvalues, average logFC, cluster, etc.
+
+Based on the average LogFC, top 20 genes can be sorted out and used as an input for DotPlot to visualize the average expression vs percent cell expression. The average expression and percent cell expression calculated by dotplot can be extracted as dataframe and the table is printed below. 
+
+The DotPlot gives a good idea about the genes which are highly expressed across different clusters. Some genes of interest include "dnc", "apolpp", "mgl".
+
+It is also interesting to note how some genes have high expression levels but low percent cell expression meaning they are just highly expressed in one cluster and not in others. 
+
+
+```{r clustering}
+
+DefaultAssay(ag_combined) <- "RNA"
+AG_markers <- FindAllMarkers(ag_combined, only.pos = T, logfc.threshold = 0.25)
+
+#top 20 genes list
+ag_top20 <- AG_markers %>% 
+  arrange(avg_log2FC)  %>%
+  pull(gene) %>% 
+  .[1:20]
+
+# PNG device
+#png("my_plot.png")
+
+#dotplot for visualization 
+c <- DotPlot(ag_combined, features = ag_top20)
+c + labs(title = "DotPlot representing representing \n cluster level statistics for top 20 genes")+theme(axis.text.x = element_text(size = 12, angle = -45))
+
+  
+## storing cluster level statistics as csv
+ag_stats <- as.data.frame(c$data)
+write.csv(ag_stats,file = "clusterLevelStats_results.csv")
+saveRDS(ag_combined,"seurat_results.rds")
+
+formattable::formattable(ag_stats)
+
+```
+
+# Challenges faced
+
+-   The use of metadata file was not clear.
+-   The cell ids in the metadata did not match the cell ids in the expression data file. Meaning in metadata file, the cell ids were named as `G0_Channel1___AAACCTGAGACAAGCC.1` (-1) whereas in expression data, the cell ids were named like `G0_Channel1___AAACCTGAGACAAGCC.1` (.1).
+-   In case if I try to merge the metadata in the meta.data slot of seurat object, it creates difficulty in downstream analysis since some functions like `FindAllMarkers` function cannot access the required information which makes it necessary to pre-process the data before calculating cluster level statistics.
+
+
+<details>
+
+<summary>
+
+**Session Info**
+
+</summary>
+
+```{r}
+sessionInfo()
+```
+
+</details>
